@@ -29,6 +29,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-functions-compat.js"></script>
 
     <!-- JsBarcode -->
     <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
@@ -405,15 +406,57 @@
             </div>
 
             <!-- Sales View -->
-            <div id="sales-view" class="view-section absolute inset-0 hidden p-6">
-                <h3 class="text-2xl font-bold mb-4">Sales History & Returns</h3>
-                <p>View past receipts, process returns, and lookup invoice barcodes.</p>
+            <div id="sales-view" class="view-section absolute inset-0 hidden p-6 flex flex-col">
+                <h3 class="text-2xl font-bold mb-4">Sales History</h3>
+                <div class="flex items-center space-x-4 mb-4">
+                    <div class="relative flex-1 max-w-md">
+                        <i class="fa-solid fa-search absolute left-3 top-3 text-gray-400"></i>
+                        <input type="search" id="sales-search" placeholder="Search by invoice number..." class="w-full pl-10 pr-4 py-2 border rounded-md focus:outline-none focus:border-primary">
+                    </div>
+                </div>
+                <div class="bg-white flex-1 overflow-auto rounded-lg shadow-sm border">
+                    <table class="w-full text-left border-collapse">
+                        <thead class="bg-gray-50 sticky top-0 z-10">
+                            <tr>
+                                <th class="p-4 border-b font-semibold text-gray-600">Invoice</th>
+                                <th class="p-4 border-b font-semibold text-gray-600">Date</th>
+                                <th class="p-4 border-b font-semibold text-gray-600">Branch</th>
+                                <th class="p-4 border-b font-semibold text-gray-600">Cashier</th>
+                                <th class="p-4 border-b font-semibold text-gray-600">Method</th>
+                                <th class="p-4 border-b font-semibold text-gray-600 text-right">Total</th>
+                                <th class="p-4 border-b font-semibold text-gray-600 text-right">Receipt</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sales-table-body" class="divide-y divide-gray-100">
+                            <tr><td colspan="7" class="py-8 text-center text-gray-400">
+                                <i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><p>Loading sales...</p>
+                            </td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Customers View -->
+            <div id="customers-view" class="view-section absolute inset-0 hidden p-6 flex flex-col">
+                <h3 class="text-2xl font-bold mb-4">Customers</h3>
+                <div id="customers-placeholder" class="bg-white p-10 rounded-lg shadow-sm border text-center text-gray-400">
+                    <i class="fa-solid fa-users text-4xl mb-2"></i>
+                    <p>Customer management stores only the contact details your business needs (name, phone, email). No unnecessary personal information is collected. Customer records will become available in the next release.</p>
+                </div>
             </div>
 
             <!-- Settings View -->
             <div id="settings-view" class="view-section absolute inset-0 hidden p-6">
                 <h3 class="text-2xl font-bold mb-4">Settings</h3>
-                <p>Configure store settings, taxes, and printers.</p>
+                <div class="bg-white p-6 rounded-lg shadow-sm border max-w-lg">
+                    <h4 class="font-bold text-gray-700 mb-2">Data Backup</h4>
+                    <p class="text-sm text-gray-500 mb-4">A scheduled daily backup is exported to Cloud Storage with 6 months retention (handled by the <code>scheduledBackup</code> Cloud Function).</p>
+                    <p class="text-xs text-gray-400 mb-2">Current backend status:</p>
+                    <ul class="text-sm text-gray-600 space-y-1 mb-4" id="backup-status-list">
+                        <li><i class="fa-solid fa-circle-check text-green-500 mr-2"></i>Daily automatic backup (Cloud Storage)</li>
+                        <li><i class="fa-solid fa-circle-check text-green-500 mr-2"></i>180-day (6 month) retention pruner</li>
+                    </ul>
+                </div>
             </div>
 
             <!-- Users / Staff View -->
@@ -553,6 +596,90 @@
         </div>
     </div>
 
+    <!-- Stock Transfer Modal -->
+    <div id="modal-transfer-stock" class="fixed inset-0 bg-gray-900 bg-opacity-50 z-50 flex items-center justify-center hidden" role="dialog" aria-modal="true" aria-label="Transfer stock">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden">
+            <div class="p-4 border-b flex justify-between items-center bg-gray-50">
+                <h3 class="font-bold text-lg text-gray-800">Transfer Stock</h3>
+                <button class="text-gray-400 hover:text-gray-600 modal-close-btn" data-close-transfer><i class="fa-solid fa-times"></i></button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Product</label>
+                    <input type="text" id="tr-product-name" class="w-full px-3 py-2 border rounded-md bg-gray-50 text-gray-500 cursor-not-allowed" disabled>
+                    <input type="hidden" id="tr-product-id">
+                    <input type="hidden" id="tr-from-branch">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">From Branch</label>
+                    <input type="text" id="tr-from-branch-display" class="w-full px-3 py-2 border rounded-md bg-gray-50 text-gray-500 cursor-not-allowed" disabled>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">To Branch</label>
+                    <select id="tr-to-branch" class="w-full px-3 py-2 border rounded-md focus:outline-none focus:border-primary">
+                        <option value="branch_01">Branch 01</option>
+                        <option value="branch_02">Branch 02</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Quantity</label>
+                    <input type="number" id="tr-quantity" min="1" value="1" class="w-full px-3 py-2 border rounded-md focus:outline-none focus:border-primary" required>
+                </div>
+
+                <p id="tr-error" class="text-red-500 text-sm hidden"></p>
+            </div>
+            <div class="p-4 border-t bg-gray-50 flex justify-end space-x-2">
+                <button class="px-4 py-2 border rounded-md text-gray-600 hover:bg-gray-100 transition modal-close-btn" data-close-transfer>Cancel</button>
+                <button id="btn-confirm-transfer" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-pink-700 transition shadow">Transfer Stock</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Payment Modal -->
+    <div id="modal-payment" class="fixed inset-0 bg-gray-900 bg-opacity-50 z-50 flex items-center justify-center hidden" role="dialog" aria-modal="true" aria-label="Process payment">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden">
+            <div class="p-4 border-b flex justify-between items-center bg-gray-50">
+                <h3 class="font-bold text-lg text-gray-800">Process Payment</h3>
+                <button class="text-gray-400 hover:text-gray-600 modal-close-btn" id="payment-modal-close"><i class="fa-solid fa-times"></i></button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div class="flex justify-between items-center bg-gray-50 rounded p-3">
+                    <span class="font-semibold text-gray-700">Total Due</span>
+                    <span class="text-2xl font-bold text-primary" id="pay-amount-due">$0.00</span>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1" for="pay-method">Payment Method</label>
+                    <select id="pay-method" class="w-full px-3 py-2 border rounded-md focus:outline-none focus:border-primary">
+                        <option value="cash">Cash</option>
+                        <option value="card">Card</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+
+                <div id="pay-cash-block">
+                    <label class="block text-sm font-medium text-gray-700 mb-1" for="pay-cash-received">Cash Received ($)</label>
+                    <input type="number" id="pay-cash-received" step="0.01" min="0" class="w-full px-3 py-2 border rounded-md focus:outline-none focus:border-primary" placeholder="0.00">
+                    <p class="text-xs text-gray-400 mt-1">Enter the amount tendered to calculate change.</p>
+                </div>
+
+                <div class="flex justify-between items-center" id="pay-change-block">
+                    <span class="font-semibold text-gray-700">Change Due</span>
+                    <span class="text-xl font-bold text-green-600" id="pay-change-due">$0.00</span>
+                </div>
+
+                <p id="pay-error" class="text-red-500 text-sm hidden"></p>
+            </div>
+            <div class="p-4 border-t bg-gray-50 flex justify-end space-x-2">
+                <button class="px-4 py-2 border rounded-md text-gray-600 hover:bg-gray-100 transition modal-close-btn" data-close-payment>Cancel</button>
+                <button id="btn-confirm-payment" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-pink-700 transition shadow">Confirm Payment</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Product Form Modal -->
     <div id="modal-product-form" class="fixed inset-0 bg-gray-900 bg-opacity-50 z-50 flex items-center justify-center hidden">
         <div class="bg-white rounded-lg shadow-xl w-full max-w-lg overflow-hidden">
@@ -619,8 +746,12 @@
 
     <script src="js/inventory/movements.js"></script>
     <script src="js/inventory/inventory.js"></script>
+    <script src="js/inventory/transfers.js"></script>
     
     <script src="js/reports/reports.js"></script>
+    <script src="js/sales/sales.js"></script>
+    <script src="js/customers/customers.js"></script>
+    <script src="js/backup/backup.js"></script>
     
     <script src="js/app.js"></script>
 </body>

@@ -84,14 +84,19 @@ window.Users = {
             const branchDisplay = user.branchId === 'all' ? 'All Branches' : (user.branchId === 'branch_01' ? 'Branch 01' : 'Branch 02');
             
             const statusStyle = user.active === false ? 'opacity-50' : '';
+            const esc = (v) => String(v == null ? '' : v).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const email = esc(user.email);
+            const name = esc(user.name);
+            const role = esc(user.role);
+            const branchDisplayEsc = esc(branchDisplay);
 
             tr.innerHTML = `
-                <td class="p-4 border-b text-gray-800 font-medium ${statusStyle}">${user.email} ${user.active === false ? '(Inactive)' : ''}</td>
-                <td class="p-4 border-b text-gray-800 ${statusStyle}">${user.name}</td>
+                <td class="p-4 border-b text-gray-800 font-medium ${statusStyle}">${email} ${user.active === false ? '(Inactive)' : ''}</td>
+                <td class="p-4 border-b text-gray-800 ${statusStyle}">${name}</td>
                 <td class="p-4 border-b">
-                    <span class="px-2 py-1 rounded text-xs font-semibold uppercase tracking-wider ${roleColor}">${user.role}</span>
+                    <span class="px-2 py-1 rounded text-xs font-semibold uppercase tracking-wider ${roleColor}">${role}</span>
                 </td>
-                <td class="p-4 border-b text-gray-500 ${statusStyle}">${branchDisplay}</td>
+                <td class="p-4 border-b text-gray-500 ${statusStyle}">${branchDisplayEsc}</td>
                 <td class="p-4 border-b text-right">
                     <button class="text-primary hover:text-pink-800 p-2 btn-edit-user" title="Edit Staff" data-id="${user.id}">
                         <i class="fa-solid fa-pen-to-square"></i>

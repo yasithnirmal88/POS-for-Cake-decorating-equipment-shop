@@ -20,6 +20,13 @@
     animation: fadeIn 0.3s ease-in-out;
 }
 
+/* Views that rely on flexbox (POS, inventory, sales, reports, users) must
+   keep their flex display: the Tailwind `flex` class is overridden by the
+   display:block !important above otherwise. */
+.view-section.active.flex {
+    display: flex !important;
+}
+
 .nav-link.active {
     background-color: #374151; /* bg-gray-700 */
     color: #fbcfe8; /* text-pink-200 */

@@ -35,7 +35,9 @@ window.Router = {
             '/users': 'manage_users',
             '/settings': 'manage_settings',
             '/inventory': 'view_inventory', // everyone can view
-            '/products': 'manage_products',
+            '/products': 'view_products',   // cashiers can view, only managers edit
+            '/sales': 'view_sales',
+            '/customers': 'view_customers'
         };
         
         const reqPerm = routePermissions[hash];

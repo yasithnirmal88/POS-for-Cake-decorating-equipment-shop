@@ -57,38 +57,26 @@ window.Movements = {
 
         try {
             const db = window.firebaseDb;
-            const user = window.AppState.user ? window.AppState.user.email : 'unknown';
+            if (!db || !window.firebaseConfig || window.firebaseConfig.apiKey === "YOUR_API_KEY") {
+                alert("Real Firebase connection required for stock adjustments.");
+                return;
+            }
+            const user = window.AppState.user ? (window.AppState.user.name || window.AppState.user.email) : 'unknown';
             
-            // Document ID format: branch_01_p123
+            // Document ID format: branchId_productId
             const inventoryDocId = `${branchId}_${productId}`;
             const inventoryRef = db.collection('inventory').doc(inventoryDocId);
             const movementRef = db.collection('stock_movements').doc();
 
-            // We use a batch write to ensure both the inventory is updated and the audit log is created atomically.
-            // Note: In real Firebase SDK, we'd use db.batch(). Our mock doesn't fully support batch, 
-            // but we will write it as close to the real SDK as possible.
-            
-            // For the mock/real fallback, we'll use individual promises if batch isn't fully mocked
             const qtyChange = type === 'addition' ? quantity : -quantity;
-            
-            // Since we might not have a real batch in the mock, let's just do individual writes for now
-            // In production with Firebase, you'd do:
-            // const batch = db.batch();
-            // batch.set(inventoryRef, { stockQuantity: firebase.firestore.FieldValue.increment(qtyChange) }, { merge: true });
-            // batch.set(movementRef, { ... });
-            // await batch.commit();
 
-            // Get current doc to update it (Simulating the increment without FieldValue for mock compatibility)
-            const doc = await inventoryRef.get();
-            let newStock = qtyChange;
-            if (doc.exists) {
-                newStock = (doc.data().stockQuantity || 0) + qtyChange;
-            }
-
+            // Use FieldValue.increment for an atomic, concurrency-safe update.
+            // This avoids the lost-update hazard of read-modify-write.
+            const _increment = window.firebase.firestore.FieldValue.increment;
             await inventoryRef.set({
                 branchId,
                 productId,
-                stockQuantity: newStock,
+                stockQuantity: _increment(qtyChange),
                 lastUpdated: new Date().toISOString()
             }, { merge: true });
 
@@ -99,16 +87,12 @@ window.Movements = {
                 quantity,
                 reason,
                 user,
+                byUid: window.AppState.user ? window.AppState.user.uid : null,
                 timestamp: new Date().toISOString()
             });
 
             document.getElementById('modal-adjust-stock').classList.add('hidden');
-            
-            // If using the mock DB, manually trigger a refresh of the table
-            if (window.firebaseConfig && window.firebaseConfig.apiKey === "YOUR_API_KEY") {
-                 window.Inventory.fetchData(); // Mock manual refresh
-            }
-            
+            window.Inventory.fetchData(); // refresh the table
         } catch (error) {
             console.error("Error adjusting stock:", error);
             alert("Failed to adjust stock. See console for details.");

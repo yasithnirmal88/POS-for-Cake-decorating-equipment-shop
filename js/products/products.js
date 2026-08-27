@@ -91,18 +91,24 @@ window.Products = {
         filteredData.forEach(item => {
             const tr = document.createElement('tr');
             tr.className = 'hover:bg-gray-50 transition';
-            const iconStr = item.imageIcon || item.icon || 'fa-cube';
-            
+            const iconStr = String(item.imageIcon || item.icon || 'fa-cube').replace(/[^a-zA-Z0-9-_ ]/g, '');
+            const name = String(item.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const cat = String(item.category || 'Uncategorized').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const barcode = String(item.barcode || '-').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const price = Number(item.price);
+            const inactive = item.active === false;
+            const inactiveRow = inactive ? ' opacity-50' : '';
+
             tr.innerHTML = `
                 <td class="p-4 border-b text-center text-gray-400"><i class="fa-solid ${iconStr} text-xl"></i></td>
-                <td class="p-4 border-b text-gray-800 font-medium">${item.name}</td>
-                <td class="p-4 border-b text-gray-500">
-                    <span class="px-2 py-1 bg-gray-100 rounded text-xs font-semibold uppercase tracking-wider">${item.category || 'Uncategorized'}</span>
+                <td class="p-4 border-b text-gray-800 font-medium${inactiveRow}">${name}${inactive ? ' <span class="text-red-500 text-xs">(Inactive)</span>' : ''}</td>
+                <td class="p-4 border-b text-gray-500${inactiveRow}">
+                    <span class="px-2 py-1 bg-gray-100 rounded text-xs font-semibold uppercase tracking-wider">${cat}</span>
                 </td>
-                <td class="p-4 border-b text-gray-500 font-mono text-sm">${item.barcode || '-'}</td>
-                <td class="p-4 border-b text-gray-800 font-bold text-right">$${parseFloat(item.price).toFixed(2)}</td>
-                <td class="p-4 border-b text-right">
-                    <button class="text-primary hover:text-pink-800 p-2 btn-edit-prod" title="Edit Product" data-id="${item.id}">
+                <td class="p-4 border-b text-gray-500 font-mono text-sm${inactiveRow}">${barcode}</td>
+                <td class="p-4 border-b text-gray-800 font-bold text-right${inactiveRow}">$${(Number.isFinite(price) ? price.toFixed(2) : '0.00')}</td>
+                <td class="p-4 border-b text-right${inactiveRow}">
+                    <button class="btn-edit-prod text-primary hover:text-pink-800 p-2" title="Edit Product" data-id="${item.id}">
                         <i class="fa-solid fa-pen-to-square"></i>
                     </button>
                 </td>
@@ -170,6 +176,10 @@ window.Products = {
             alert("Please fill in all required fields (Name, Barcode, Price).");
             return;
         }
+        if (price < 0) {
+            alert("Price cannot be negative.");
+            return;
+        }
 
         const btn = document.getElementById('btn-save-product');
         btn.disabled = true;
@@ -177,7 +187,22 @@ window.Products = {
 
         try {
             const db = window.firebaseDb;
-            
+            if (!db) {
+                alert("Database is not available.");
+                return;
+            }
+
+            // Prevent duplicate barcodes (server-side rules do not yet scan the
+            // collection, so add a client-side check for a clear message).
+            if (!id) {
+                const dup = await db.collection('products')
+                    .where('barcode', '==', barcode).limit(1).get();
+                if (!dup.empty) {
+                    alert("A product with this barcode already exists.");
+                    return;
+                }
+            }
+
             const productData = {
                 name,
                 barcode,
@@ -188,14 +213,13 @@ window.Products = {
             };
 
             if (id) {
-                // Update
+                // Update - do NOT touch `active` so editing never silently
+                // reactivates a soft-deleted product.
                 await db.collection('products').doc(id).update(productData);
             } else {
                 // Create
+                productData.active = true;
                 productData.createdAt = new Date().toISOString();
-                
-                // Optional: Check if barcode exists first to prevent duplicates
-                // Let's just create for now to keep it simple
                 await db.collection('products').add(productData);
             }
 
@@ -210,28 +234,40 @@ window.Products = {
         }
     },
 
+    // Soft delete: mark the product inactive so historical sales keep their
+    // product references and reports remain accurate. The document is never
+    // hard-deleted (Firestore rules forbid deletes).
     deleteProduct: async function() {
         const id = document.getElementById('prod-form-id').value;
         if (!id) return;
 
-        if (!confirm("Are you sure you want to delete this product? This action cannot be undone and may affect historical sales reports if not handled properly.")) {
+        if (!confirm("Mark this product as inactive? It will be hidden from the POS and maintain historical sales references.")) {
             return;
         }
 
         const btn = document.getElementById('btn-delete-product');
         btn.disabled = true;
-        btn.innerText = 'Deleting...';
+        btn.innerText = 'Processing...';
 
         try {
             const db = window.firebaseDb;
-            await db.collection('products').doc(id).delete();
+            if (!db) {
+                alert("Database is not available.");
+                return;
+            }
+            await db.collection('products').doc(id).update({
+                active: false,
+                updatedAt: new Date().toISOString()
+            });
             document.getElementById('modal-product-form').classList.add('hidden');
+            // Clear the modal id so re-opening creates a new product.
+            document.getElementById('prod-form-id').value = '';
         } catch (error) {
-            console.error("Error deleting product:", error);
-            alert("Failed to delete product.");
+            console.error("Error deactivating product:", error);
+            alert("Failed to deactivate product.");
         } finally {
             btn.disabled = false;
-            btn.innerText = 'Delete Product';
+            btn.innerText = 'Mark Inactive';
         }
     }
 };

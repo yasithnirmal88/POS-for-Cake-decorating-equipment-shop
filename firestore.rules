@@ -1,39 +1,190 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Helper function to check if the user is logged in
+
+    // ------------------------------------------------------------------
+    // CakePOS Firestore Security Rules
+    //
+    // Security model (authoritative, enforced server-side):
+    //   * `users` collection holds business profiles keyed by Auth UID.
+    //     role ∈ {admin, manager, cashier}; branchId ∈ {all, branch_01, branch_02}.
+    //   * Reads/writes below are scoped by the authenticated user's role and
+    //     branch assignment. A cashier assigned to branch_01 CANNOT read or
+    //     write branch_02 documents just by changing the client.
+    //   * Sale creation writes are NOT permitted from the client. They are
+    //     performed by the callable `createSale` Cloud Function (admin SDK,
+    //     which bypasses these rules) so prices, totals and inventory can be
+    //     validated server-side.
+    //   * Stock transfers are performed by the `transferStock` Cloud Function
+    //     for atomicity and branch-authorization.
+    // ------------------------------------------------------------------
+
     function isAuthenticated() {
       return request.auth != null;
     }
 
+    function getUser() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUser().role == 'admin';
+    }
+
+    function isManager() {
+      return isAuthenticated()
+        && getUser().role in ['manager', 'admin'];
+    }
+
+    function canManageProducts() {
+      return isManager() && getUser().active == true;
+    }
+
+    // True when this user is allowed to operate on the given branch.
+    // Users with branchId == 'all' (admin-cross branch, unassigned) can see
+    // all branches. Branch-scoped users can only operate on their branch.
+    function branchAllowed(branch) {
+      return isAuthenticated() && getUser().active == true
+        && (getUser().branchId == 'all' || getUser().branchId == branch);
+    }
+
+    // True when the requesting user may read a sales/inventory document for
+    // the given branch.
+    function canReadBranch(branch) {
+      return isAuthenticated() && getUser().active == true
+        && (getUser().role == 'admin'
+            || getUser().branchId == 'all'
+            || getUser().branchId == branch);
+    }
+
     // ---------------------------------------------------------
-    // TEMPORARILY RELAXED RULES
-    // Since your Auth UIDs do not currently match your 'users' 
-    // document IDs, strict role checks will fail. 
-    // For now, we allow any logged-in user to read/write.
+    // users — business profiles (role + branch). Read your own profile or
+    // (admin/manager) read all. Writes are reserved for admins (and the Cloud
+    // Functions). A manager may not promote users to admin, and no user may
+    // change their own role/branch (prevents self-demotion lockouts and
+    // accidental self-elevation confusion).
     // ---------------------------------------------------------
-    
     match /users/{userId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated()
+        && (request.auth.uid == userId
+            || getUser().role in ['admin', 'manager']);
+      // Only admins may create/update user profiles. Managers can read but not
+      // modify roles or branch assignments (prevents privilege escalation).
+      allow create: if isAdmin()
+        && request.resource.data.role in ['cashier', 'manager', 'admin']
+        && request.resource.data.branchId in ['all', 'branch_01', 'branch_02']
+        && request.resource.data.active is bool;
+      allow update: if isAdmin()
+        && (userId == request.auth.uid) != true          // cannot edit self
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['name', 'role', 'branchId', 'active', 'updatedAt', 'email'])
+        && request.resource.data.role in ['cashier', 'manager', 'admin']
+        && request.resource.data.branchId in ['all', 'branch_01', 'branch_02']
+        && request.resource.data.active is bool;
+      allow delete: if false;                            // use active:false instead
     }
 
+    // ---------------------------------------------------------
+    // products — catalog shared across branches. Read for all authenticated.
+    // Create/update restricted to admins & managers. Products are never hard-
+    // deleted; they are soft-deleted via `active:false` so historical sales
+    // keep their references.
+    // ---------------------------------------------------------
     match /products/{productId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow create: if canManageProducts()
+        && request.resource.data.barcode is string
+        && request.resource.data.price is number
+        && request.resource.data.price >= 0
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0;
+      allow update: if canManageProducts()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['name', 'barcode', 'price', 'cost', 'category',
+                       'imageIcon', 'active', 'updatedAt'])
+        && request.resource.data.price is number
+        && request.resource.data.price >= 0;
+      allow delete: if false; // soft delete only: set active:false
     }
 
-    match /sales/{saleId} {
-      allow read, write: if isAuthenticated();
-    }
-
+    // ---------------------------------------------------------
+    // inventory — branch-scoped records (one per product per branch).
+    // Reads restricted to the user's branch. Writes via admin/manager.
+    // Sales deductions are performed atomically by the createSale function.
+    // ---------------------------------------------------------
     match /inventory/{itemId} {
-      allow read, write: if isAuthenticated();
+      // Enforce that the document id carries the branch for query isolation.
+      allow read: if isAuthenticated()
+        && getUser().active == true
+        && canReadBranch(resource.data.branchId);
+      allow create: if canManageProducts()
+        && branchAllowed(request.resource.data.branchId)
+        && request.resource.data.stockQuantity is number
+        && request.resource.data.stockQuantity >= 0
+        && request.resource.data.productId is string;
+      allow update: if canManageProducts()
+        && branchAllowed(resource.data.branchId)  // branch must match existing
+        && request.resource.data.branchId == resource.data.branchId // cannot move
+        && request.resource.data.stockQuantity is number
+        && request.resource.data.stockQuantity >= 0
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['stockQuantity', 'lastUpdated', 'reorderLevel']);
+      allow delete: if false;
     }
-    
+
+    // ---------------------------------------------------------
+    // stock_movements — immutable audit trail. Created by the Cloud Function
+    // and by admin/manager adjustments. Never deletable.
+    // ---------------------------------------------------------
     match /stock_movements/{movementId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && canReadBranch(resource.data.branchId);
+      allow create: if canManageProducts()
+        && branchAllowed(request.resource.data.branchId);
+      allow update, delete: if false;
     }
-    
+
+    // ---------------------------------------------------------
+    // transfers — executed only by the `transferStock` Cloud Function for
+    // atomicity. Clients may never write transfers directly.
+    // ---------------------------------------------------------
+    match /transfers/{transferId} {
+      allow read: if isAuthenticated()
+        && (getUser().role == 'admin'
+            || getUser().branchId == 'all'
+            || getUser().branchId in [resource.data.fromBranchId, resource.data.toBranchId]);
+      allow write: if false;
+    }
+
+    // ---------------------------------------------------------
+    // sales — immutable financial records. Readable only within the user's
+    // branch scope (admin sees all). NEVER writable by clients: createSale
+    // (Cloud Function) is the only writer. Completed sales can never be edited
+    // or deleted, preventing corruption of revenue history.
+    // ---------------------------------------------------------
+    match /sales/{saleId} {
+      allow read: if isAuthenticated()
+        && getUser().active == true
+        && canReadBranch(resource.data.branchId);
+      allow create, update, delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // customers — minimal business info. Not sensitive PII beyond contact
+    // details required for the business. Read: staff. Write: admin/manager.
+    // ---------------------------------------------------------
+    match /customers/{customerId} {
+      allow read: if isAuthenticated() && getUser().active == true;
+      allow create: if isManager()
+        && request.resource.data.name is string && request.resource.data.name.size() > 0;
+      allow update: if isManager()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['name', 'phone', 'email', 'notes', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // Fallback: deny everything else, including any unlisted collection.
+    // ---------------------------------------------------------
     match /{document=**} {
       allow read, write: if false;
     }
