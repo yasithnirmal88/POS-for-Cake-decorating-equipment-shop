@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CakePOS Database Seeder</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#e83e8c', // CakePOS pink
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+
+    <div class="bg-white p-8 rounded-lg shadow-md max-w-lg w-full text-center">
+        <h1 class="text-2xl font-bold text-gray-800 mb-4">Database Seeder</h1>
+        <p class="text-gray-600 mb-6">This script will populate your connected Firebase Firestore with 10 dummy products and 3 months of randomized sales data.</p>
+        
+        <button id="btn-seed" class="bg-primary text-white font-bold py-3 px-6 rounded hover:bg-pink-700 transition w-full shadow-lg">
+            Start Seeding Data
+        </button>
+        
+        <div id="log-output" class="mt-6 text-left bg-gray-900 text-green-400 p-4 rounded h-64 overflow-y-auto font-mono text-sm hidden">
+            <!-- Logs will appear here -->
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+    
+    <!-- App Config -->
+    <script src="js/config/firebase-config.js"></script>
+
+    <script>
+        function log(msg) {
+            const output = document.getElementById('log-output');
+            output.classList.remove('hidden');
+            output.innerHTML += `<div>> ${msg}</div>`;
+            output.scrollTop = output.scrollHeight;
+            console.log(msg);
+        }
+
+        const dummyProducts = [
+            { barcode: '100001', name: 'Premium Vanilla Fondant 1kg', price: 15.99, category: 'fondant', imageIcon: 'fa-cube' },
+            { barcode: '100002', name: 'Premium Chocolate Fondant 1kg', price: 16.99, category: 'fondant', imageIcon: 'fa-cube' },
+            { barcode: '100003', name: 'Gold Sprinkles 50g', price: 4.50, category: 'sprinkles', imageIcon: 'fa-sparkles' },
+            { barcode: '100004', name: 'Rainbow Sprinkles 100g', price: 5.50, category: 'sprinkles', imageIcon: 'fa-sparkles' },
+            { barcode: '100005', name: 'Piping Bag Set (100pcs)', price: 8.99, category: 'tools', imageIcon: 'fa-bag-shopping' },
+            { barcode: '100006', name: 'Star Piping Tip Set', price: 12.00, category: 'tools', imageIcon: 'fa-star' },
+            { barcode: '100007', name: 'Edible Food Color Kit', price: 22.00, category: 'colors', imageIcon: 'fa-palette' },
+            { barcode: '100008', name: 'Cake Board 12" Round', price: 3.25, category: 'boards', imageIcon: 'fa-circle' },
+            { barcode: '100009', name: 'Cake Box 12x12x6', price: 2.50, category: 'boxes', imageIcon: 'fa-box' },
+            { barcode: '100010', name: 'Edible Gold Leaf', price: 18.50, category: 'decorations', imageIcon: 'fa-leaf' }
+        ];
+
+        async function seedDatabase() {
+            const btn = document.getElementById('btn-seed');
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+            
+            try {
+                const db = window.firebaseDb;
+                if (!db || window.firebaseConfig.apiKey === "YOUR_API_KEY") {
+                    log("ERROR: Real Firebase not connected. Check js/config/firebase-config.js");
+                    return;
+                }
+
+                log("Starting database seed...");
+
+                // 1. Seed Products
+                log("Seeding 10 Products...");
+                const productIds = [];
+                for (const p of dummyProducts) {
+                    p.createdAt = new Date().toISOString();
+                    p.updatedAt = new Date().toISOString();
+                    
+                    const docRef = await db.collection('products').add(p);
+                    productIds.push({ id: docRef.id, ...p });
+                    log(`Created product: ${p.name}`);
+                }
+
+                // 2. Seed Sales (Last 3 months)
+                log("Generating 3 months of sales data...");
+                const now = new Date();
+                const threeMonthsAgo = new Date();
+                threeMonthsAgo.setMonth(now.getMonth() - 3);
+                
+                const daysDiff = Math.floor((now - threeMonthsAgo) / (1000 * 60 * 60 * 24));
+                const branches = ['branch_01', 'branch_02'];
+                
+                // Let's generate roughly 2-5 sales per day
+                let totalSales = 0;
+                
+                for (let i = 0; i <= daysDiff; i++) {
+                    const currentDate = new Date(threeMonthsAgo);
+                    currentDate.setDate(currentDate.getDate() + i);
+                    
+                    const salesCount = Math.floor(Math.random() * 4) + 2; // 2 to 5 sales
+                    
+                    for (let s = 0; s < salesCount; s++) {
+                        // Randomize time of day between 9 AM and 6 PM
+                        const saleTime = new Date(currentDate);
+                        saleTime.setHours(9 + Math.floor(Math.random() * 9), Math.floor(Math.random() * 60), 0);
+                        
+                        const branchId = branches[Math.floor(Math.random() * branches.length)];
+                        
+                        // Pick 1 to 4 random items for the cart
+                        const itemsCount = Math.floor(Math.random() * 4) + 1;
+                        const cartItems = [];
+                        let totalAmount = 0;
+                        
+                        for(let c=0; c < itemsCount; c++) {
+                            const p = productIds[Math.floor(Math.random() * productIds.length)];
+                            const qty = Math.floor(Math.random() * 3) + 1; // 1 to 3 qty
+                            
+                            cartItems.push({
+                                productId: p.id,
+                                barcode: p.barcode,
+                                name: p.name,
+                                price: p.price,
+                                quantity: qty,
+                                subtotal: p.price * qty
+                            });
+                            totalAmount += (p.price * qty);
+                        }
+                        
+                        const invoiceNumber = `INV-${saleTime.getTime().toString().slice(-6)}-${Math.floor(Math.random()*1000)}`;
+                        
+                        const saleData = {
+                            invoiceNumber,
+                            branchId,
+                            cashierId: 'dummy_cashier',
+                            items: cartItems,
+                            subtotal: totalAmount,
+                            tax: totalAmount * 0.08, // 8% dummy tax
+                            total: totalAmount * 1.08,
+                            paymentMethod: Math.random() > 0.5 ? 'card' : 'cash',
+                            timestamp: saleTime.toISOString(),
+                            status: 'completed'
+                        };
+                        
+                        await db.collection('sales').doc(invoiceNumber).set(saleData);
+                        totalSales++;
+                    }
+                }
+                
+                log(`Successfully created ${totalSales} dummy sales records across 3 months!`);
+                log("Seeding complete! You can now safely delete seed.html.");
+                
+            } catch (err) {
+                log(`ERROR: ${err.message}`);
+                console.error(err);
+            }
+        }
+
+        document.getElementById('btn-seed').addEventListener('click', seedDatabase);
+    </script>
+</body>
+</html>

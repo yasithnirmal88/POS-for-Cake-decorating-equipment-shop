@@ -1,0 +1,12 @@
+# Firebase cache
+.firebase/
+
+# Dependencies
+node_modules/
+
+# Accidental empty file / build artifacts
+firebase
+
+# OS files
+.DS_Store
+Thumbs.db
