@@ -171,6 +171,9 @@ window.Auth = {
                 if (window.Inventory && typeof window.Inventory.fetchData === 'function') {
                     window.Inventory.fetchData();
                 }
+                if (window.Products && typeof window.Products.fetchData === 'function') {
+                    window.Products.fetchData();
+                }
             } catch (err) {
                 console.error("Error reloading data after login:", err);
             }
