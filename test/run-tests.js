@@ -63,8 +63,8 @@ console.log('# Permissions RBAC');
   check('admin can manage_settings', win.Permissions.canAccess('manage_settings') === true);
 }
 
-console.log('# Auth role handling');
-{
+console.log('# Auth: missing profile denies login + Customers validation');
+(async () => {
   const win = freshWindow();
   evalModule(win, 'js/core/state.js');
   evalModule(win, 'js/core/permissions.js');
@@ -72,21 +72,34 @@ console.log('# Auth role handling');
   win.AppState.user = { role: 'cashier', branchId: 'branch_01' };
   check('cashier branch-scoped', win.Permissions.isBranchScoped() === true);
   win.Permissions.applyUIPermissions = () => {};
-  // Simulate a user without a profile -> fetchUserRoleAndLogin should deny.
-  // We stub db to return no docs for both uid and email lookup.
   const empty = async () => ({ empty: true, docs: [], size: 0, forEach: () => {} });
   const chain = { where: () => chain, limit: () => chain, orderBy: () => chain, get: empty, onSnapshot: (cb) => { cb({ empty: true, forEach: () => {} }); return () => {}; } };
-  win.firebaseDb.collection = () => ({
-    doc: () => ({ get: async () => ({ exists: false, data: () => ({}) }) }),
-    where: () => chain,
-    limit: () => chain,
-  });
+  win.firebaseDb.collection = () => ({ doc: () => ({ get: async () => ({ exists: false, data: () => ({}) }) }), where: () => chain, limit: () => chain });
   let denied = false;
-  const origLogout = win.Auth.handleLogout;
   win.Auth.handleLogout = async () => { denied = true; };
-  win.Auth.fetchUserRoleAndLogin({ uid: 'x', email: 'x@y.com' }).catch(() => {});
-  setTimeout(() => check('missing profile denies login', denied === true), 30);
-}
+  await win.Auth.fetchUserRoleAndLogin({ uid: 'x', email: 'x@y.com' }).catch(() => {});
+  check('missing profile denies login', denied === true);
 
-console.log('\nRESULTS: ' + passed + ' passed, ' + failed + ' failed');
-setTimeout(() => process.exit(failed ? 1 : 0), 100);
+  // Customers module
+  const win2 = freshWindow();
+  evalModule(win2, 'js/core/state.js');
+  evalModule(win2, 'js/core/permissions.js');
+  evalModule(win2, 'js/core/auth.js');
+  evalModule(win2, 'js/customers/customers.js');
+  win2.AppState.user = { role: 'manager', branchId: 'branch_01' };
+  win2.document.getElementById('customer-form-name').value = 'Jo';
+  win2.document.getElementById('customer-form-phone').value = '!!!bad!!!';
+  await win2.Customers.saveCustomer();
+  check('rejects invalid phone', (win2.__lastAlert || '').indexOf('valid phone') !== -1);
+  const win3 = freshWindow();
+  evalModule(win3, 'js/core/state.js');
+  evalModule(win3, 'js/core/permissions.js');
+  evalModule(win3, 'js/core/auth.js');
+  evalModule(win3, 'js/customers/customers.js');
+  win3.AppState.user = { role: 'cashier', branchId: 'branch_01' };
+  win3.Customers.openFormModal();
+  check('cashier blocked from customer form', (win3.__lastAlert || '').indexOf('permission') !== -1);
+
+  console.log('\nRESULTS: ' + passed + ' passed, ' + failed + ' failed');
+  process.exit(failed ? 1 : 0);
+})();

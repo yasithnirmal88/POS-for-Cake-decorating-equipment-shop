@@ -179,7 +179,10 @@ service cloud.firestore {
       allow update: if isManager()
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['name', 'phone', 'email', 'notes', 'updatedAt']);
-      allow delete: if false;
+      // Customers are not referenced by sales records, so a manager may remove
+      // a customer's contact details. (Soft-delete via an `active` flag can be
+      // introduced later if sales begin referencing customers.)
+      allow delete: if isManager();
     }
 
     // ---------------------------------------------------------
