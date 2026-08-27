@@ -56,46 +56,36 @@ window.Movements = {
         btn.innerText = 'Saving...';
 
         try {
-            const db = window.firebaseDb;
-            if (!db || !window.firebaseConfig || window.firebaseConfig.apiKey === "YOUR_API_KEY") {
-                alert("Real Firebase connection required for stock adjustments.");
+            // Stock is adjusted authoritatively and atomically by the
+            // `adjustStock` Cloud Function. The caller's identity and branch
+            // are derived server-side from context.auth; the client never
+            // writes to the inventory or stock_movements collections directly.
+            if (!window.firebase || !window.firebase.functions) {
+                alert('Stock adjustment service is not available. Please try again later.');
                 return;
             }
-            const user = window.AppState.user ? (window.AppState.user.name || window.AppState.user.email) : 'unknown';
-            
-            // Document ID format: branchId_productId
-            const inventoryDocId = `${branchId}_${productId}`;
-            const inventoryRef = db.collection('inventory').doc(inventoryDocId);
-            const movementRef = db.collection('stock_movements').doc();
-
-            const qtyChange = type === 'addition' ? quantity : -quantity;
-
-            // Use FieldValue.increment for an atomic, concurrency-safe update.
-            // This avoids the lost-update hazard of read-modify-write.
-            const _increment = window.firebase.firestore.FieldValue.increment;
-            await inventoryRef.set({
-                branchId,
-                productId,
-                stockQuantity: _increment(qtyChange),
-                lastUpdated: new Date().toISOString()
-            }, { merge: true });
-
-            await movementRef.set({
+            const fn = window.firebase.functions().httpsCallable('adjustStock');
+            await fn({
                 productId,
                 branchId,
                 type,
                 quantity,
-                reason,
-                user,
-                byUid: window.AppState.user ? window.AppState.user.uid : null,
-                timestamp: new Date().toISOString()
+                reason
             });
 
             document.getElementById('modal-adjust-stock').classList.add('hidden');
             window.Inventory.fetchData(); // refresh the table
         } catch (error) {
             console.error("Error adjusting stock:", error);
-            alert("Failed to adjust stock. See console for details.");
+            const msg = (error && error.message) || '';
+            if (msg.indexOf('permission-denied') !== -1 || msg.indexOf('Unauthorized') !== -1 ||
+                msg.indexOf('Not authorized') !== -1) {
+                alert('You are not authorized to adjust stock for this branch.');
+            } else if (msg.indexOf('below zero') !== -1) {
+                alert('Cannot deduct below zero stock.');
+            } else {
+                alert('Failed to adjust stock. Please try again.');
+            }
         } finally {
             btn.disabled = false;
             btn.innerText = 'Save Adjustment';

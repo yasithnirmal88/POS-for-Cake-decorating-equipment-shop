@@ -36,6 +36,10 @@ window.Products = {
         }
 
         const db = window.firebaseDb;
+        if (!db || !window.firebaseConfig || window.firebaseConfig.apiKey === "YOUR_API_KEY") {
+            console.warn("Real Firebase connection required for products.");
+            return;
+        }
         const query = db.collection('products').orderBy('name');
 
         if (typeof query.onSnapshot === 'function' && window.firebaseConfig && window.firebaseConfig.apiKey !== "YOUR_API_KEY") {

@@ -100,6 +100,42 @@ console.log('# Auth: missing profile denies login + Customers validation');
   win3.Customers.openFormModal();
   check('cashier blocked from customer form', (win3.__lastAlert || '').indexOf('permission') !== -1);
 
+  // Stock adjustment goes through the adjustStock Cloud Function (never a
+  // direct client write to inventory / stock_movements).
+  const win4 = freshWindow();
+  evalModule(win4, 'js/core/state.js');
+  evalModule(win4, 'js/core/permissions.js');
+  evalModule(win4, 'js/core/auth.js');
+  evalModule(win4, 'js/inventory/movements.js');
+  win4.AppState.user = { role: 'manager', branchId: 'branch_01' };
+  let calledAdjustStock = false;
+  win4.firebase.functions = () => ({
+    httpsCallable: (name) => {
+      if (name === 'adjustStock') {
+        calledAdjustStock = true;
+        return async () => ({ data: { ok: true } });
+      }
+      return async () => ({ data: { ok: false } });
+    }
+  });
+  win4.document.getElementById('adj-product-id').value = 'p1';
+  win4.document.getElementById('adj-branch-id').value = 'branch_01';
+  win4.document.getElementById('adj-type').value = 'addition';
+  win4.document.getElementById('adj-quantity').value = '5';
+  win4.document.getElementById('adj-reason').value = 'restock';
+  await win4.Movements.saveAdjustment();
+  check('adjustment calls adjustStock function', calledAdjustStock === true);
+
+  // Cashier is blocked from opening the adjustment modal (manage_inventory).
+  const win5 = freshWindow();
+  evalModule(win5, 'js/core/state.js');
+  evalModule(win5, 'js/core/permissions.js');
+  evalModule(win5, 'js/core/auth.js');
+  evalModule(win5, 'js/inventory/movements.js');
+  win5.AppState.user = { role: 'cashier', branchId: 'branch_01' };
+  win5.Movements.openAdjustmentModal('p1', 'P', 'branch_01', 10);
+  check('cashier blocked from stock adjustment', (win5.__lastAlert || '').indexOf('permission') !== -1);
+
   console.log('\nRESULTS: ' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed ? 1 : 0);
 })();

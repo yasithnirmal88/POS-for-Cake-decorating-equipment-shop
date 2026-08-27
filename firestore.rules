@@ -17,6 +17,9 @@ service cloud.firestore {
     //     validated server-side.
     //   * Stock transfers are performed by the `transferStock` Cloud Function
     //     for atomicity and branch-authorization.
+    //   * Stock adjustments are performed by the `adjustStock` Cloud Function
+    //     (transactional, audited, branch-authorized). Clients can never write
+    //     to `inventory` or `stock_movements` directly.
     // ------------------------------------------------------------------
 
     function isAuthenticated() {
@@ -109,38 +112,27 @@ service cloud.firestore {
 
     // ---------------------------------------------------------
     // inventory — branch-scoped records (one per product per branch).
-    // Reads restricted to the user's branch. Writes via admin/manager.
-    // Sales deductions are performed atomically by the createSale function.
+    // Reads restricted to the user's branch. Written ONLY by the
+    // `createSale` / `transferStock` / `adjustStock` Cloud Functions (which
+    // use the Admin SDK and bypass these rules). Clients may never write stock
+    // directly - stock is an authoritative value derived server-side.
     // ---------------------------------------------------------
     match /inventory/{itemId} {
-      // Enforce that the document id carries the branch for query isolation.
       allow read: if isAuthenticated()
         && getUser().active == true
         && canReadBranch(resource.data.branchId);
-      allow create: if canManageProducts()
-        && branchAllowed(request.resource.data.branchId)
-        && request.resource.data.stockQuantity is number
-        && request.resource.data.stockQuantity >= 0
-        && request.resource.data.productId is string;
-      allow update: if canManageProducts()
-        && branchAllowed(resource.data.branchId)  // branch must match existing
-        && request.resource.data.branchId == resource.data.branchId // cannot move
-        && request.resource.data.stockQuantity is number
-        && request.resource.data.stockQuantity >= 0
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['stockQuantity', 'lastUpdated', 'reorderLevel']);
-      allow delete: if false;
+      // No client writes. Stock changes happen through Cloud Functions only,
+      // which guarantees branch authorization, auditability and atomicity.
+      allow create, update, delete: if false;
     }
 
     // ---------------------------------------------------------
-    // stock_movements — immutable audit trail. Created by the Cloud Function
-    // and by admin/manager adjustments. Never deletable.
+    // stock_movements — immutable audit trail. Created ONLY by Cloud
+    // Functions (createSale / transferStock / adjustStock). Never deletable.
     // ---------------------------------------------------------
     match /stock_movements/{movementId} {
       allow read: if isAuthenticated() && canReadBranch(resource.data.branchId);
-      allow create: if canManageProducts()
-        && branchAllowed(request.resource.data.branchId);
-      allow update, delete: if false;
+      allow create, update, delete: if false;
     }
 
     // ---------------------------------------------------------

@@ -1,0 +1,10 @@
+{
+  "name": "cakepos-frontend-tests",
+  "private": true,
+  "scripts": {
+    "test": "node run-tests.js"
+  },
+  "devDependencies": {
+    "jsdom": "^22.1.0"
+  }
+}

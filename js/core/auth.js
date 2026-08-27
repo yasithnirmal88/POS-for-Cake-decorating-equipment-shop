@@ -171,6 +171,10 @@ window.Auth = {
                 if (window.Inventory && typeof window.Inventory.fetchData === 'function') {
                     window.Inventory.fetchData();
                 }
+                // Re-create the products listener: Products.init() runs on
+                // DOMContentLoaded (before auth), so its pre-auth listener is
+                // denied by the rules. Refresh it now that the user is
+                // authenticated so the POS grid and product catalog populate.
                 if (window.Products && typeof window.Products.fetchData === 'function') {
                     window.Products.fetchData();
                 }

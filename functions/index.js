@@ -232,6 +232,80 @@ exports.transferStock = functions.https.onCall(async (data, context) => {
 });
 
 // ---------------------------------------------------------------------------
+// adjustStock (callable) - authoritative inventory adjustment.
+//
+// Stock is manipulated server-side (transactional) so the audit trail is
+// accurate and concurrent adjustments cannot lose updates. The client sends
+// only {productId, branchId, type: 'addition'|'deduction', quantity, reason}.
+// The caller's identity is taken from context.auth, never from the payload.
+// ---------------------------------------------------------------------------
+exports.adjustStock = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "You must be signed in.");
+  }
+  const user = await getUserProfile(context.auth.uid);
+  if (!user || user.active === false) {
+    throw new functions.https.HttpsError("permission-denied", "Account is not active.");
+  }
+  if (user.role !== "admin" && user.role !== "manager") {
+    throw new functions.https.HttpsError("permission-denied", "Only managers/admins may adjust stock.");
+  }
+
+  const productId = String(data.productId || "");
+  const branchId = normalizeBranch(String(data.branchId || ""));
+  const type = String(data.type || "");
+  const qty = Number(data.quantity);
+  const reason = String(data.reason || "").slice(0, 500);
+
+  if (!productId || !branchId) {
+    throw new functions.https.HttpsError("invalid-argument", "Product and branch are required.");
+  }
+  if (!authorizedForBranch(user, branchId)) {
+    throw new functions.https.HttpsError("permission-denied", "Not authorized for this branch.");
+  }
+  if (type !== "addition" && type !== "deduction") {
+    throw new functions.https.HttpsError("invalid-argument", "Adjustment type must be addition or deduction.");
+  }
+  if (!Number.isInteger(qty) || qty <= 0 || qty > 10000) {
+    throw new functions.https.HttpsError("invalid-argument", "Quantity must be a positive integer.");
+  }
+  if (!reason) {
+    throw new functions.https.HttpsError("invalid-argument", "A reason is required for the adjustment.");
+  }
+
+  const invRef = db.collection("inventory").doc(branchId + "_" + productId);
+  const qtyChange = type === "addition" ? qty : -qty;
+
+  await db.runTransaction(async (tx) => {
+    const invSnap = await tx.get(invRef);
+    const current = invSnap.exists ? Number(invSnap.data().stockQuantity || 0) : 0;
+    const newStock = current + qtyChange;
+    if (newStock < 0) {
+      throw new functions.https.HttpsError(
+        "failed-precondition", "Cannot deduct below zero stock.");
+    }
+    tx.set(invRef, {
+      productId: productId,
+      branchId: branchId,
+      stockQuantity: newStock,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    tx.set(db.collection("stock_movements").doc(), {
+      productId: productId,
+      branchId: branchId,
+      type: type,
+      quantity: qty,
+      reason: reason,
+      adjustedBy: context.auth.uid,
+      adjustedByName: String(user.name || user.email || "unknown"),
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+  });
+
+  return { ok: true };
+});
+
+// ---------------------------------------------------------------------------
 // bootstrapAdmin (callable) - creates the initial admin profile. Gated to the
 // ADMIN_EMAILS env var so an arbitrary user can never create admins.
 // ---------------------------------------------------------------------------
