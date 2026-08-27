@@ -4,7 +4,8 @@ const { JSDOM } = require('jsdom');
 const fs = require('fs');
 const path = require('path');
 
-const PROJECT = '/workspace/project/POS-for-Cake-decorating-equipment-shop';
+const PROJECT = process.env.CAKEPOS_PROJECT
+  || path.resolve(__dirname, '..');
 
 // Return a fresh jsdom window with the app DOM + a Firebase mock installed.
 function freshWindow() {
