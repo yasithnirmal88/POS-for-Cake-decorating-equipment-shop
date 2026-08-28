@@ -1,5 +1,10 @@
-# Firebase cache
+# Firebase cache & logs
 .firebase/
+firebase-debug.log
+
+# Local Firebase functions env (contains secrets - never commit)
+functions/.env.*
+!.env.example
 
 # Dependencies
 node_modules/
