@@ -40,6 +40,13 @@ window.Reports = {
     },
 
     fetchData: function() {
+        // Do not query before authentication (rules deny unauthenticated reads
+        // and produce a confusing permission error). auth.js calls refresh()
+        // after login.
+        if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+            return;
+        }
+
         let branchFilter = document.getElementById('report-branch-filter').value;
         const dateFilter = document.getElementById('report-date-filter').value;
         

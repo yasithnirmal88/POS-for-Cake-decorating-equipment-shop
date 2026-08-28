@@ -19,6 +19,13 @@ window.Inventory = {
     },
 
     fetchData: function() {
+        // Do not query before authentication (rules deny unauthenticated reads
+        // and produce a confusing permission error). auth.js calls fetchData()
+        // again after login.
+        if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+            return;
+        }
+
         let branchFilter = document.getElementById('inv-branch-filter').value;
         const tbody = document.getElementById('inventory-table-body');
         

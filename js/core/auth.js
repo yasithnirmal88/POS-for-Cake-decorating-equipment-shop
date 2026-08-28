@@ -71,10 +71,12 @@ window.Auth = {
                 return;
             }
 
-            // SECURITY: Look up the user's profile by their Auth UID, which is the
-            // only identifier that cannot be spoofed by the client. Legacy records
-            // that were keyed by email are supported as a fallback, but the UID
-            // path is authoritative.
+            // SECURITY: The user's Firestore profile is keyed by their Auth UID -
+            // the only identifier that cannot be spoofed by the client. There is
+            // intentionally NO email-based fallback query: listing `users` by
+            // email is denied by the security rules for non-admin users and
+            // would let a query reveal staff emails. A missing profile is an
+            // explicit "not yet set up" condition, never a role grant.
             let userDoc = null;
             let userDocId = null;
             try {
@@ -84,19 +86,10 @@ window.Auth = {
                     userDocId = user.uid;
                 }
             } catch (e) {
-                console.warn("UID document lookup failed, falling back to email query:", e.message);
-            }
-
-            if (!userDoc) {
-                // Legacy fallback: some deployments created user docs keyed by email.
-                const snap = await db.collection('users')
-                    .where('email', '==', user.email)
-                    .limit(1)
-                    .get();
-                if (!snap.empty) {
-                    userDoc = snap.docs[0].data();
-                    userDocId = snap.docs[0].id;
-                }
+                console.error("Profile lookup failed:", e);
+                alert("Unable to load your profile. Please try again.");
+                await this.handleLogout();
+                return;
             }
 
             // SECURITY: Never grant admin (or any role) to a user who has no
@@ -127,12 +120,13 @@ window.Auth = {
 
             // Normalize branch assignment: 'all' or a known branch id. Validate so
             // a malformed document cannot grant cross-branch access accidentally.
-            let branchId = userDoc.branchId || 'all';
-            if (!['all', 'branch_01', 'branch_02'].includes(branchId)) {
-                branchId = userDocId === user.uid ? 'all' : branchId;
-            }
+            // A profile is always keyed by the caller's UID here, so an invalid
+            // branch never grants wider access - it falls back to 'all' and the
+            // rules still enforce the user's actual documents.
+            const branchId = ['all', 'branch_01', 'branch_02'].includes(userDoc.branchId)
+                ? userDoc.branchId : 'all';
 
-            // Update Global State
+            // Update Global AppState
             window.AppState.user = {
                 uid: user.uid,
                 userDocId,
@@ -177,6 +171,18 @@ window.Auth = {
                 // authenticated so the POS grid and product catalog populate.
                 if (window.Products && typeof window.Products.fetchData === 'function') {
                     window.Products.fetchData();
+                }
+                // Refresh the remaining data views so no manual page reload is
+                // needed after login.
+                if (window.Sales && typeof window.Sales.fetchData === 'function') {
+                    window.Sales.fetchData();
+                }
+                if (window.Users && typeof window.Users.fetchData === 'function' &&
+                    window.Permissions.canAccess('manage_users')) {
+                    window.Users.fetchData();
+                }
+                if (window.Customers && typeof window.Customers.fetchData === 'function') {
+                    window.Customers.fetchData();
                 }
             } catch (err) {
                 console.error("Error reloading data after login:", err);

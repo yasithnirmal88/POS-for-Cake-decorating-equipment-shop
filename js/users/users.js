@@ -32,6 +32,12 @@ window.Users = {
             this.unsubscribe();
         }
 
+        // Do not query before authentication: rules deny unauthenticated reads
+        // which would log a misleading permission error.
+        if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+            return;
+        }
+
         const db = window.firebaseDb;
         if (!db || !window.firebaseConfig || window.firebaseConfig.apiKey === "YOUR_API_KEY") {
             console.warn("Mock Mode: Cannot fetch real users.");

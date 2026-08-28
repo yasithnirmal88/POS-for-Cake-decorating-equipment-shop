@@ -35,6 +35,16 @@ window.Products = {
             this.unsubscribe();
         }
 
+        // Do not attach a listener before authentication: the rules deny
+        // unauthenticated reads (correctly), which would log a misleading
+        // permission error on every page load. auth.js calls fetchData() again
+        // after login with valid credentials.
+        const currentUser = window.firebaseAuth && window.firebaseAuth.currentUser;
+        if (!currentUser) {
+            this.cachedData = [];
+            return;
+        }
+
         const db = window.firebaseDb;
         if (!db || !window.firebaseConfig || window.firebaseConfig.apiKey === "YOUR_API_KEY") {
             console.warn("Real Firebase connection required for products.");

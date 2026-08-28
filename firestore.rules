@@ -26,16 +26,27 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // True only when the request.auth.uid has a profile document in `users`.
+    // Every helper below MUST be gated on this first: calling
+    // `getUser().field` on a missing document evaluates a null map and throws,
+    // which Firestore reports as a generic permission denial that can break
+    // login and data reads for newly-provisioned (or incorrectly-provisioned)
+    // staff accounts.
+    function hasProfile() {
+      return isAuthenticated()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
     function getUser() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
     function isAdmin() {
-      return isAuthenticated() && getUser().role == 'admin';
+      return hasProfile() && getUser().role == 'admin';
     }
 
     function isManager() {
-      return isAuthenticated()
+      return hasProfile()
         && getUser().role in ['manager', 'admin'];
     }
 
@@ -47,14 +58,14 @@ service cloud.firestore {
     // Users with branchId == 'all' (admin-cross branch, unassigned) can see
     // all branches. Branch-scoped users can only operate on their branch.
     function branchAllowed(branch) {
-      return isAuthenticated() && getUser().active == true
+      return hasProfile() && getUser().active == true
         && (getUser().branchId == 'all' || getUser().branchId == branch);
     }
 
     // True when the requesting user may read a sales/inventory document for
     // the given branch.
     function canReadBranch(branch) {
-      return isAuthenticated() && getUser().active == true
+      return hasProfile() && getUser().active == true
         && (getUser().role == 'admin'
             || getUser().branchId == 'all'
             || getUser().branchId == branch);
@@ -68,9 +79,13 @@ service cloud.firestore {
     // accidental self-elevation confusion).
     // ---------------------------------------------------------
     match /users/{userId} {
+      // Everyone may read their own profile. Managers/admins may read all
+      // profiles (used by the user-management screen). The `hasProfile()`
+      // gate prevents `getUser()` from evaluating on a missing document,
+      // which would turn into a generic permission error for list reads.
       allow read: if isAuthenticated()
         && (request.auth.uid == userId
-            || getUser().role in ['admin', 'manager']);
+            || (hasProfile() && getUser().role in ['admin', 'manager']));
       // Only admins may create/update user profiles. Managers can read but not
       // modify roles or branch assignments (prevents privilege escalation).
       allow create: if isAdmin()
@@ -88,13 +103,13 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------
-    // products — catalog shared across branches. Read for all authenticated.
-    // Create/update restricted to admins & managers. Products are never hard-
-    // deleted; they are soft-deleted via `active:false` so historical sales
-    // keep their references.
+    // products — catalog shared across branches. Read for all authorized staff
+    // (requires an active Firestore profile). Create/update restricted to
+    // admins & managers. Products are never hard-deleted; they are soft-deleted
+    // via `active:false` so historical sales keep their references.
     // ---------------------------------------------------------
     match /products/{productId} {
-      allow read: if isAuthenticated();
+      allow read: if hasProfile() && getUser().active == true;
       allow create: if canManageProducts()
         && request.resource.data.barcode is string
         && request.resource.data.price is number
@@ -118,9 +133,7 @@ service cloud.firestore {
     // directly - stock is an authoritative value derived server-side.
     // ---------------------------------------------------------
     match /inventory/{itemId} {
-      allow read: if isAuthenticated()
-        && getUser().active == true
-        && canReadBranch(resource.data.branchId);
+      allow read: if canReadBranch(resource.data.branchId);
       // No client writes. Stock changes happen through Cloud Functions only,
       // which guarantees branch authorization, auditability and atomicity.
       allow create, update, delete: if false;
@@ -140,7 +153,7 @@ service cloud.firestore {
     // atomicity. Clients may never write transfers directly.
     // ---------------------------------------------------------
     match /transfers/{transferId} {
-      allow read: if isAuthenticated()
+      allow read: if hasProfile() && getUser().active == true
         && (getUser().role == 'admin'
             || getUser().branchId == 'all'
             || getUser().branchId in [resource.data.fromBranchId, resource.data.toBranchId]);
@@ -154,9 +167,7 @@ service cloud.firestore {
     // or deleted, preventing corruption of revenue history.
     // ---------------------------------------------------------
     match /sales/{saleId} {
-      allow read: if isAuthenticated()
-        && getUser().active == true
-        && canReadBranch(resource.data.branchId);
+      allow read: if canReadBranch(resource.data.branchId);
       allow create, update, delete: if false;
     }
 
@@ -165,7 +176,7 @@ service cloud.firestore {
     // details required for the business. Read: staff. Write: admin/manager.
     // ---------------------------------------------------------
     match /customers/{customerId} {
-      allow read: if isAuthenticated() && getUser().active == true;
+      allow read: if hasProfile() && getUser().active == true;
       allow create: if isManager()
         && request.resource.data.name is string && request.resource.data.name.size() > 0;
       allow update: if isManager()

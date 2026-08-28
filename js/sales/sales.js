@@ -16,6 +16,12 @@ window.Sales = {
     },
 
     fetchData: function() {
+        // Do not query before authentication (rules deny unauthenticated reads
+        // and produce a confusing permission error). auth.js re-triggers
+        // module refreshes after login.
+        if (!window.firebaseAuth || !window.firebaseAuth.currentUser) {
+            return;
+        }
         const db = window.firebaseDb;
         if (!db || !window.firebaseConfig || window.firebaseConfig.apiKey === "YOUR_API_KEY") {
             document.getElementById('sales-table-body').innerHTML =

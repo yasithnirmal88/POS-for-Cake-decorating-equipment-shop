@@ -1,10 +1,29 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
+const { defineString, storageBucket } = require("firebase-functions/params");
 
 admin.initializeApp();
 
 const db = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
+
+// ---------------------------------------------------------------------------
+// Configuration (managed by firebase-functions/params - NOT functions.config).
+//
+// ADMIN_EMAILS: comma-separated email addresses allowed to bootstrap the
+// initial CakePOS administrator. Supplied via Secret Manager so it is never
+// exposed to the frontend. Fails closed when missing/empty.
+//
+// BACKUP_BUCKET: Cloud Storage bucket used by scheduledBackup. Defaults to the
+// project's default storage bucket (${projectId}.appspot.com) when unset.
+// ---------------------------------------------------------------------------
+const adminEmails = defineString("ADMIN_EMAILS", {
+  description: "Comma-separated email addresses allowed to bootstrap the initial CakePOS administrator"
+});
+
+const backupBucket = defineString("BACKUP_BUCKET", {
+  description: "Cloud Storage bucket used for CakePOS backups (defaults to the project storage bucket)"
+});
 
 const VALID_ROLES = ["admin", "manager", "cashier"];
 const BRANCH_IDS = ["branch_01", "branch_02"];
@@ -28,6 +47,21 @@ function authorizedForBranch(user, branchId) {
   return user &&
     user.active !== false &&
     (user.branchId === "all" || user.branchId === branchId);
+}
+
+// Parse ADMIN_EMAILS (comma-separated) into a normalized set of lowercase
+// emails. Fails closed: returns an empty set if unset/whitespace-only.
+function allowedAdminEmails() {
+  const raw = String(adminEmails.value() || "");
+  return raw
+    .split(",")
+    .map(function (s) { return s.trim().toLowerCase(); })
+    .filter(Boolean);
+}
+
+// Normalize an email for comparison (trim + lowercase). Returns "" if absent.
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -306,37 +340,65 @@ exports.adjustStock = functions.https.onCall(async (data, context) => {
 });
 
 // ---------------------------------------------------------------------------
-// bootstrapAdmin (callable) - creates the initial admin profile. Gated to the
-// ADMIN_EMAILS env var so an arbitrary user can never create admins.
+// bootstrapAdmin (callable) - creates the initial admin profile.
+//
+// Authorization (all enforced server-side, never trusted from the client):
+//   1. Caller must be authenticated.
+//   2. Caller's verified Auth email must be present.
+//   3. Caller's verified Auth email must be in ADMIN_EMAILS (Secret Manager
+//      param). Fails closed if ADMIN_EMAILS is unset/empty.
+//   4. The function always writes role: "admin", branchId: "all",
+//      active: true - the client cannot choose a role or branch.
+//   5. Idempotent: if a profile already exists for the UID, it is returned
+//      unchanged (never overwrites existing user data / privilege).
+// No passwords, tokens or secrets are logged.
 // ---------------------------------------------------------------------------
 exports.bootstrapAdmin = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
+    console.warn("bootstrapAdmin: unauthenticated call blocked.");
     throw new functions.https.HttpsError("unauthenticated", "You must be signed in.");
   }
-  const allowedEmails = (process.env.ADMIN_EMAILS || "")
-    .split(",").map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+
+  const allowedEmails = allowedAdminEmails();
   if (allowedEmails.length === 0) {
+    console.error("bootstrapAdmin: ADMIN_EMAILS not configured; failing closed.");
     throw new functions.https.HttpsError("failed-precondition",
-      "bootstrapAdmin is not configured (ADMIN_EMAILS env).");
+      "bootstrapAdmin is not configured (ADMIN_EMAILS). Contact an administrator.");
   }
-  const email = (context.auth.token.email || "").toLowerCase();
-  if (!allowedEmails.includes(email)) {
+
+  const email = normalizeEmail(context.auth.token.email);
+
+  // Do not leak whether the email matches: fail with a generic denial.
+  if (!email || !allowedEmails.includes(email)) {
+    console.warn("bootstrapAdmin: unauthorized email attempted bootstrap.",
+      { uid: context.auth.uid });
     throw new functions.https.HttpsError("permission-denied",
-      "Your email is not allowed to bootstrap an admin account.");
+      "You are not authorized to bootstrap an account.");
   }
+
+  // Validate optional display name; never trust role/branch from the client.
+  const displayName = String((data && data.name) || "")
+    .trim().slice(0, 100) || email.split("@")[0];
+
+  // Idempotent: never overwrite an existing profile (prevents privilege
+  // confusion and accidental destructive updates).
   if (await getUserProfile(context.auth.uid)) {
     return { ok: true, message: "Profile already exists." };
   }
+
+  const now = admin.firestore.FieldValue.serverTimestamp();
   await db.collection("users").doc(context.auth.uid).set({
-    uid: context.auth.uid,
     email: email,
-    name: data.name || email.split("@")[0],
+    displayName: displayName,
+    name: displayName,
     role: "admin",
     branchId: "all",
     active: true,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    createdAt: now,
+    updatedAt: now
   });
+
+  console.log("bootstrapAdmin: admin profile created.", { uid: context.auth.uid });
   return { ok: true };
 });
 
@@ -344,8 +406,10 @@ exports.bootstrapAdmin = functions.https.onCall(async (data, context) => {
 // scheduledBackup (Pub/Sub, every 24 hours) - real backup to Cloud Storage.
 // Exports every CakePOS collection as JSONL, then prunes objects older than
 // 180 days (6 months). Objects are encrypted at rest by Cloud Storage.
-// Set BACKUP_BUCKET (defaults to ${GCLOUD_PROJECT}.appspot.com) and grant the
-// runtime service account roles/storage.objectAdmin on that bucket.
+//
+// Bucket: from the BACKUP_BUCKET param, falling back to the project's default
+// storage bucket (${projectId}.appspot.com) when BACKUP_BUCKET is unset.
+// Grant the runtime service account storage.objectAdmin on the chosen bucket.
 //
 // For very large production data prefer the managed Firestore export
 // (gcloud firestore export gs://bucket/backups) - this function is a
@@ -354,11 +418,27 @@ exports.bootstrapAdmin = functions.https.onCall(async (data, context) => {
 exports.scheduledBackup = functions.pubsub.schedule("every 24 hours").onRun(async () => {
   const St = require("@google-cloud/storage");
   const storage = new St.Storage();
-  const bucketName = process.env.BACKUP_BUCKET ||
-    (process.env.GCLOUD_PROJECT === undefined ? "cakepos-backups" : process.env.GCLOUD_PROJECT + ".appspot.com");
+  // Prefer BACKUP_BUCKET; otherwise use the project's default storage bucket.
+  const bucketName = String(backupBucket.value() || "").trim()
+    .replace(/^gs:\/\//, "")
+    .replace(/\/$/, "") || String(storageBucket.value() || "").trim();
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const prefix = "cakepos-backups/" + ts + "/";
   const bucket = storage.bucket(bucketName);
+
+  if (!bucketName) {
+    throw new Error("scheduledBackup: no storage bucket configured (BACKUP_BUCKET unset and no default storage bucket).");
+  }
+
+  // Fail clearly if the bucket is unavailable/missing rather than silently
+  // claiming success. getMetadata throws if the bucket does not exist or the
+  // runtime service account lacks storage.objectAdmin.
+  try {
+    await bucket.getMetadata();
+  } catch (err) {
+    console.error("scheduledBackup: bucket unavailable.", { bucket: bucketName, error: err.message });
+    throw new Error("scheduledBackup: backup bucket '" + bucketName + "' is unavailable. Grant the runtime service account storage.objectAdmin and retry.");
+  }
 
   const collections = await db.listCollections();
   let totalDocs = 0;

@@ -80,6 +80,37 @@ console.log('# Auth: missing profile denies login + Customers validation');
   await win.Auth.fetchUserRoleAndLogin({ uid: 'x', email: 'x@y.com' }).catch(() => {});
   check('missing profile denies login', denied === true);
 
+  // No email-query fallback: login must rely solely on the UID-keyed profile
+  // (a collection query on `users` by email is denied by the security rules
+  // for non-admin users and would leak/expose staff emails).
+  const winB = freshWindow();
+  evalModule(winB, 'js/core/state.js');
+  evalModule(winB, 'js/core/permissions.js');
+  evalModule(winB, 'js/core/auth.js');
+  winB.AppState.user = { role: 'cashier', branchId: 'branch_01' };
+  winB.Permissions.applyUIPermissions = () => {};
+  let whereCalled = false;
+  const chainB = { where: () => { whereCalled = true; return chainB; }, limit: () => chainB, orderBy: () => chainB, get: async () => ({ empty: true, docs: [], size: 0, forEach: () => {} }), onSnapshot: (cb) => { cb({ empty: true, forEach: () => {} }); return () => {}; } };
+  winB.firebaseDb.collection = () => ({ doc: () => ({ get: async () => ({ exists: false, data: () => ({}) }) }), where: () => chainB, limit: () => chainB });
+  let deniedB = false;
+  winB.Auth.handleLogout = async () => { deniedB = true; };
+  await winB.Auth.fetchUserRoleAndLogin({ uid: 'x', email: 'x@y.com' }).catch(() => {});
+  check('no email-query fallback during login', whereCalled === false);
+
+  // Valid profile (self-read by UID) logs the user in successfully.
+  const winC = freshWindow();
+  evalModule(winC, 'js/core/state.js');
+  evalModule(winC, 'js/core/permissions.js');
+  evalModule(winC, 'js/core/auth.js');
+  winC.AppState.user = { role: 'cashier', branchId: 'branch_01' };
+  winC.Permissions.applyUIPermissions = () => {};
+  winC.Auth.handleLogout = async () => {};
+  winC.Router = { handleRoute: () => {} };
+  winC.firebaseDb.collection = () => ({ doc: () => ({ get: async () => ({ exists: true, data: () => ({ name: 'Syn', role: 'admin', branchId: 'all', active: true }) }) }) });
+  await winC.Auth.fetchUserRoleAndLogin({ uid: 'ok', email: 'ok@x.com' }).catch(() => {});
+  check('existing profile logs in (admin/all)', winC.AppState.user && winC.AppState.user.role === 'admin');
+  check('existing profile branch all', winC.AppState.user && winC.AppState.user.branchId === 'all');
+
   // Customers module
   const win2 = freshWindow();
   evalModule(win2, 'js/core/state.js');
